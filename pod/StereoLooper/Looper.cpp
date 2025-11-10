@@ -23,11 +23,15 @@ int                 mod    = MAX_SIZE;
 int                 len    = 0;
 int                 loopStart  = 0;
 int                 loopLength = MAX_SIZE;
+float               loopSpeed = 1.0;    // Loop playback speed
+float               positionAccumulator = 0.0;  // For fractional position tracking
+uint32_t            loopBlinkTimer = 0;  // Timer for LED blink at loop start
 // float               inVol  = 0;
 // float               loopVol= 0;
 bool                res    = false;
-bool                knob1Takeover = false;
-bool                knob2Takeover = false;
+bool                encoderDown = false; // Encoder direction control
+bool                knob1Active = false;  // Knob1 becomes active when in 0-0.05 range
+bool                knob2Active = false;  // Knob2 becomes active when in 0.95-1 range
 
 void ResetBuffer();
 void Controls();
@@ -79,10 +83,15 @@ void ResetBuffer()
     rec   = false;
     first = true;
     fwd   = true;
+    loopSpeed = 1.0;
+    positionAccumulator = 0.0;
+    loopBlinkTimer = 0;
     pos   = 0;
     len   = 0;
-    knob1Takeover = false;
-    knob2Takeover = false;
+    loopStart = 0;                // Reset loop start to beginning
+    loopLength = MAX_SIZE;        // Reset loop length to full buffer
+    knob1Active = false;          // Reset knob takeover - knobs become inactive
+    knob2Active = false;          // Reset knob takeover - knobs become inactive
     
     // Clear both left and right channel buffers
     for(int i = 0; i < mod; i++)
@@ -125,9 +134,34 @@ void UpdateButtons()
         rec  = false;
     }
 
-    if(pod.encoder.RisingEdge())
+    if(pod.encoder.RisingEdge()) {
+        encoderDown = false;  // Reset when encoder is released
+    }
+
+    if(pod.encoder.FallingEdge() && !encoderDown)
     {
         fwd = !fwd;
+    }
+    
+    // Encoder long press resets speed
+    if(pod.encoder.TimeHeldMs() >= 1000)
+    {
+        encoderDown = true;
+        loopSpeed = 1.0;
+        positionAccumulator = 0.0;
+    }
+    
+    // Encoder turn controls speed
+    int32_t encoder_inc = pod.encoder.Increment();
+    if(encoder_inc > 0)
+    {
+        loopSpeed *= 1.1f;  // Increase speed by 10%
+        if(loopSpeed > 4.0f) loopSpeed = 4.0f;  // Cap at 4x speed
+    }
+    else if(encoder_inc < 0)
+    {
+        loopSpeed *= 0.9f;  // Decrease speed by 10%
+        if(loopSpeed < 0.25f) loopSpeed = 0.25f;  // Cap at 1/4 speed
     }
 }
 
@@ -137,10 +171,28 @@ void Controls()
     pod.ProcessAnalogControls();
     pod.ProcessDigitalControls();
 
-    // Only allow knob control after first loop is recorded
+    float knob1Val = pod.knob1.Process();
+    float knob2Val = pod.knob2.Process();
+    
+    // Only allow knob takeover after first loop is recorded
     if(!first) {
-        loopStart  = (int) (mod * pod.knob1.Process());
-        loopLength = (int) ( (mod-loopStart) * pod.knob2.Process() );
+        // Knob1 takeover: becomes active when moved to 0-0.05 range
+        if(knob1Val >= 0.0f && knob1Val <= 0.05f) {
+            knob1Active = true;
+        }
+        
+        // Knob2 takeover: becomes active when moved to 0.95-1.0 range
+        if(knob2Val >= 0.95f && knob2Val <= 1.0f) {
+            knob2Active = true;
+        }
+    }
+
+    // Apply knob control only when active
+    if(knob1Active) {
+        loopStart = (int) (mod * knob1Val);
+    }
+    if(knob2Active) {
+        loopLength = (int) ( (mod-loopStart) * knob2Val );
     }
     if(loopLength < 1) loopLength = 1;
 
@@ -152,7 +204,12 @@ void Controls()
     UpdateButtons();
 
     //leds
-    pod.led1.Set(0, play == true, 0);
+    // LED1 blinks off for 100ms at loop start to show speed
+    bool led1_on = play;
+    if(loopBlinkTimer > 0 && (System::GetNow() - loopBlinkTimer) < 100) {
+        led1_on = false;  // Turn off for 100ms after loop restart
+    }
+    pod.led1.Set(0, led1_on, 0);
     pod.led2.Set(rec == true, 0, 0);
 
     pod.UpdateLeds();
@@ -197,12 +254,26 @@ void NextSamples(float&                               outputL,
     // Advance playback position if playing
     if(play)
     {
+        positionAccumulator += loopSpeed;
+        
         if(fwd) {
-            pos++;
-            if(pos >= loopStart + loopLength) pos = loopStart;  // Wrap to loop start
+            while(positionAccumulator >= 1.0f) {
+                pos++;
+                positionAccumulator -= 1.0f;
+                if(pos >= loopStart + loopLength) {
+                    pos = loopStart;
+                    loopBlinkTimer = System::GetNow();  // Start blink timer when loop restarts
+                }
+            }
         } else {
-            pos--;
-            if(pos < loopStart) pos = loopStart + loopLength - 1;  // Wrap to loop end
+            while(positionAccumulator >= 1.0f) {
+                pos--;
+                positionAccumulator -= 1.0f;
+                if(pos < loopStart) {
+                    pos = loopStart + loopLength - 1;
+                    loopBlinkTimer = System::GetNow();  // Start blink timer when loop restarts
+                }
+            }
         }
     }
 
