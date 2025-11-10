@@ -6,7 +6,7 @@
 using namespace daisy;
 using namespace daisysp;
 
-DaisyPod   hw;
+DaisyPod   pod;
 Oscillator osc;
 Svf        filt;
 
@@ -37,7 +37,7 @@ void HandleMidiMessage(MidiEvent m)
                     m.channel,
                     m.data[0],
                     m.data[1]);
-            hw.seed.usb_handle.TransmitInternal((uint8_t *)buff, strlen(buff));
+            pod.seed.usb_handle.TransmitInternal((uint8_t *)buff, strlen(buff));
             // This is to avoid Max/MSP Note outs for now..
             if(m.data[1] != 0)
             {
@@ -74,28 +74,28 @@ int main(void)
 {
     // Init
     float samplerate;
-    hw.Init();
-    hw.SetAudioBlockSize(4);
-    hw.seed.usb_handle.Init(UsbHandle::FS_INTERNAL);
+    pod.Init();
+    pod.SetAudioBlockSize(4);
+    pod.seed.usb_handle.Init(UsbHandle::FS_INTERNAL);
     System::Delay(250);
 
     // Synthesis
-    samplerate = hw.AudioSampleRate();
+    samplerate = pod.AudioSampleRate();
     osc.Init(samplerate);
     osc.SetWaveform(Oscillator::WAVE_POLYBLEP_SAW);
     filt.Init(samplerate);
 
     // Start stuff.
-    hw.StartAdc();
-    hw.StartAudio(AudioCallback);
-    hw.midi.StartReceive();
+    pod.StartAdc();
+    pod.StartAudio(AudioCallback);
+    pod.midi.StartReceive();
     for(;;)
     {
-        hw.midi.Listen();
+        pod.midi.Listen();
         // Handle MIDI Events
-        while(hw.midi.HasEvents())
+        while(pod.midi.HasEvents())
         {
-            HandleMidiMessage(hw.midi.PopEvent());
+            HandleMidiMessage(pod.midi.PopEvent());
         }
     }
 }
