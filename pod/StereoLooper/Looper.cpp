@@ -51,6 +51,7 @@ bool                res    = false;
 bool                encoderDown = false; // Encoder direction control
 bool                knob1Active = false;  // Knob1 becomes active when in 0-0.05 range
 bool                knob2Active = false;  // Knob2 becomes active when in 0.95-1 range
+bool                midiLoopControl = false;  // Flag: MIDI has taken control of loop start/length
 
 void ResetBuffer();
 void Controls();
@@ -142,6 +143,7 @@ void ResetBuffer()
     loopLength = MAX_SIZE;        // Reset loop length to full buffer
     knob1Active = false;          // Reset knob takeover - knobs become inactive
     knob2Active = false;          // Reset knob takeover - knobs become inactive
+    midiLoopControl = false;      // Reset control back to physical knobs
     
     // Clear both left and right channel buffers
     for(int i = 0; i < mod; i++)
@@ -208,6 +210,7 @@ void Controls()
     float knob2Val = pod.knob2.Process();
     
     // Handle knobs through control functions
+    // Physical knobs only active when MIDI doesn't have loop control
     handleKnob1(knob1Val);
     handleKnob2(knob2Val);
     
@@ -286,12 +289,16 @@ void updateMIDIControls()
                     loopStart = (int)(mod * midiToFloat(ccValue));
                     // Clamp to valid range
                     if(loopStart >= mod - 1) loopStart = mod - 1;
+                    // MIDI takes control of loop parameters
+                    midiLoopControl = true;
                     break;
                     
                 case MIDI_CC_LOOP_LENGTH:
                     // Direct MIDI control - set length relative to remaining buffer
                     loopLength = (int)((mod - loopStart) * midiToFloat(ccValue));
                     if(loopLength < 1) loopLength = 1;
+                    // MIDI takes control of loop parameters
+                    midiLoopControl = true;
                     break;
                     
                 case MIDI_CC_RESET:
@@ -438,33 +445,39 @@ void handleSpeedChange(int32_t increment)
 
 void handleKnob1(float value)
 {
-    // Only allow knob takeover after first loop is recorded
-    if(!first) {
-        // Knob1 takeover: becomes active when moved to 0-0.05 range
-        if(value >= 0.0f && value <= 0.05f) {
-            knob1Active = true;
+    // Only work when MIDI doesn't have control of loop parameters
+    if(!midiLoopControl) {
+        // Only allow knob takeover after first loop is recorded
+        if(!first) {
+            // Knob1 takeover: becomes active when moved to 0-0.05 range
+            if(value >= 0.0f && value <= 0.05f) {
+                knob1Active = true;
+            }
         }
-    }
 
-    // Apply knob control only when active
-    if(knob1Active) {
-        loopStart = (int) (mod * value);
+        // Apply knob control only when active
+        if(knob1Active) {
+            loopStart = (int) (mod * value);
+        }
     }
 }
 
 void handleKnob2(float value)
 {
-    // Only allow knob takeover after first loop is recorded
-    if(!first) {
-        // Knob2 takeover: becomes active when moved to 0.95-1.0 range
-        if(value >= 0.95f && value <= 1.0f) {
-            knob2Active = true;
+    // Only work when MIDI doesn't have control of loop parameters
+    if(!midiLoopControl) {
+        // Only allow knob takeover after first loop is recorded
+        if(!first) {
+            // Knob2 takeover: becomes active when moved to 0.95-1.0 range
+            if(value >= 0.95f && value <= 1.0f) {
+                knob2Active = true;
+            }
         }
-    }
 
-    // Apply knob control only when active
-    if(knob2Active) {
-        loopLength = (int) ( (mod-loopStart) * value );
+        // Apply knob control only when active
+        if(knob2Active) {
+            loopLength = (int) ( (mod-loopStart) * value );
+        }
     }
 }
 
