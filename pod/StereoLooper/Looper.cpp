@@ -64,6 +64,7 @@ float midiToSpeed(uint8_t midiValue);
 
 
 // Control functions - Phase 1: Extract control logic
+void finalizeFirstLoop();  // Helper function for first loop completion
 void handleRecordToggle();
 void handleRecordOn();
 void handleRecordOff();
@@ -281,11 +282,16 @@ void updateMIDIControls()
                     break;
                     
                 case MIDI_CC_LOOP_START:
-                    handleKnob1(midiToFloat(ccValue));
+                    // Direct MIDI control - no knob takeover logic needed
+                    loopStart = (int)(mod * midiToFloat(ccValue));
+                    // Clamp to valid range
+                    if(loopStart >= mod - 1) loopStart = mod - 1;
                     break;
                     
                 case MIDI_CC_LOOP_LENGTH:
-                    handleKnob2(midiToFloat(ccValue));
+                    // Direct MIDI control - set length relative to remaining buffer
+                    loopLength = (int)((mod - loopStart) * midiToFloat(ccValue));
+                    if(loopLength < 1) loopLength = 1;
                     break;
                     
                 case MIDI_CC_RESET:
@@ -340,8 +346,8 @@ float midiToSpeed(uint8_t midiValue)
     }
 }
 
-// Control functions - Phase 1: Extract control logic
-void handleRecordToggle()
+// Helper function for first loop completion - eliminates duplication
+void finalizeFirstLoop()
 {
     if(first && rec)
     {
@@ -352,35 +358,25 @@ void handleRecordToggle()
     }
     res  = true;
     play = true;
-    rec  = !rec;
+}
+
+// Control functions - Phase 1: Extract control logic
+void handleRecordToggle()
+{
+    finalizeFirstLoop();
+    rec = !rec;
 }
 
 void handleRecordOn()
 {
-    if(first && rec)
-    {
-        first = false;
-        mod   = len;
-        loopLength = len;
-        len   = 0;
-    }
-    res  = true;
-    play = true;
-    rec  = true;
+    finalizeFirstLoop();
+    rec = true;
 }
 
 void handleRecordOff()
 {
-    if(first && rec)
-    {
-        first = false;
-        mod   = len;
-        loopLength = len;
-        len   = 0;
-    }
-    res  = true;
-    play = true;
-    rec  = false;
+    finalizeFirstLoop();
+    rec = false;
 }
 
 
