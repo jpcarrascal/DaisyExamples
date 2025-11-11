@@ -3,6 +3,25 @@
 
 #define MAX_SIZE (48000 * 60 * 1) // 1 minute of floats at 48 khz (stereo-friendly)
 
+// Phase 3: MIDI Control Change mappings
+#define MIDI_CC_RECORD      64   // Record toggle
+#define MIDI_CC_PLAY_TOGGLE 65   // Play toggle  
+#define MIDI_CC_PLAY        66   // Play (always start)
+#define MIDI_CC_STOP        67   // Stop (always stop)
+#define MIDI_CC_DIRECTION   68   // Direction toggle
+#define MIDI_CC_SPEED_RESET 69   // Speed reset to 1.0x
+#define MIDI_CC_SPEED       70   // Speed control (0-127 → 0.25x-4x)
+#define MIDI_CC_LOOP_START  71   // Loop start (0-127 → 0-1)
+#define MIDI_CC_LOOP_LENGTH 72   // Loop length (0-127 → 0-1)
+#define MIDI_CC_RESET       73   // Buffer reset
+
+// Phase 3: MIDI Note mappings (alternative triggers)
+#define MIDI_NOTE_RECORD    60   // C4 = Record toggle
+#define MIDI_NOTE_PLAY      61   // C#4 = Play 
+#define MIDI_NOTE_STOP      62   // D4 = Stop
+#define MIDI_NOTE_DIRECTION 63   // D#4 = Direction toggle
+#define MIDI_NOTE_RESET     64   // E4 = Buffer reset
+
 // Channel constants for better readability
 const int L = 0;  // Left channel index
 const int R = 1;  // Right channel index
@@ -35,6 +54,30 @@ bool                knob2Active = false;  // Knob2 becomes active when in 0.95-1
 
 void ResetBuffer();
 void Controls();
+
+// MIDI handler - Phase 2
+void updateMIDIControls();
+
+// MIDI Function Declarations:
+float midiToFloat(uint8_t midiValue);
+float midiToSpeed(uint8_t midiValue);
+
+
+// Control functions - Phase 1: Extract control logic
+void handleRecordToggle();
+void handleRecordOn();
+void handleRecordOff();
+void handlePlayToggle();
+void handlePlay();
+void handleStop();
+void handleDirectionToggle();
+void handleReverse();
+void handleForward();
+void handleSpeedReset();
+void handleSpeedChange(int32_t increment);
+void handleKnob1(float value);
+void handleKnob2(float value);
+void handleReset();
 
 void NextSamples(float&                               outputL,
                  float&                               outputR,
@@ -69,11 +112,17 @@ int main(void)
     pod.SetAudioBlockSize(4);
     ResetBuffer();
 
+    // Initialize MIDI - Phase 2
+    pod.midi.StartReceive();
+
     // start callback
     pod.StartAdc();
     pod.StartAudio(AudioCallback);
 
-    while(1) {}
+    // Main loop - Phase 2: Add MIDI processing
+    while(1) {
+        updateMIDIControls();  // Process MIDI events
+    }
 }
 
 //Resets the buffer
@@ -104,64 +153,47 @@ void ResetBuffer()
 
 void UpdateButtons()
 {
-    //button1 pressed
+    //button2 pressed - Record toggle
     if(pod.button2.RisingEdge())
     {
-        if(first && rec)
-        {
-            first = false;
-            mod   = len;
-            loopLength = len;
-            len   = 0;
-        }
-        res  = true;
-        play = true;
-        rec  = !rec;
+        handleRecordToggle();
     }
 
-    //button1 held
+    //button2 held - Reset
     if(pod.button2.TimeHeldMs() >= 1000 && res)
     {
-        ResetBuffer();
+        handleReset();
         res = false;
     }
 
-    //button2 pressed and not empty buffer
+    //button1 pressed - Play toggle (and not empty buffer)
     if(pod.button1.RisingEdge() && !(!rec && first))
     {
-        pos = loopStart; // Play from beginning
-        play = !play;
-        rec  = false;
+        handlePlayToggle();
     }
 
+    // Encoder button handling
     if(pod.encoder.RisingEdge()) {
         encoderDown = false;  // Reset when encoder is released
     }
 
     if(pod.encoder.FallingEdge() && !encoderDown)
     {
-        fwd = !fwd;
+        handleDirectionToggle();
     }
     
     // Encoder long press resets speed
     if(pod.encoder.TimeHeldMs() >= 1000)
     {
         encoderDown = true;
-        loopSpeed = 1.0;
-        positionAccumulator = 0.0;
+        handleSpeedReset();
     }
     
     // Encoder turn controls speed
     int32_t encoder_inc = pod.encoder.Increment();
-    if(encoder_inc > 0)
+    if(encoder_inc != 0)
     {
-        loopSpeed *= 1.1f;  // Increase speed by 10%
-        if(loopSpeed > 4.0f) loopSpeed = 4.0f;  // Cap at 4x speed
-    }
-    else if(encoder_inc < 0)
-    {
-        loopSpeed *= 0.9f;  // Decrease speed by 10%
-        if(loopSpeed < 0.25f) loopSpeed = 0.25f;  // Cap at 1/4 speed
+        handleSpeedChange(encoder_inc);
     }
 }
 
@@ -174,26 +206,10 @@ void Controls()
     float knob1Val = pod.knob1.Process();
     float knob2Val = pod.knob2.Process();
     
-    // Only allow knob takeover after first loop is recorded
-    if(!first) {
-        // Knob1 takeover: becomes active when moved to 0-0.05 range
-        if(knob1Val >= 0.0f && knob1Val <= 0.05f) {
-            knob1Active = true;
-        }
-        
-        // Knob2 takeover: becomes active when moved to 0.95-1.0 range
-        if(knob2Val >= 0.95f && knob2Val <= 1.0f) {
-            knob2Active = true;
-        }
-    }
-
-    // Apply knob control only when active
-    if(knob1Active) {
-        loopStart = (int) (mod * knob1Val);
-    }
-    if(knob2Active) {
-        loopLength = (int) ( (mod-loopStart) * knob2Val );
-    }
+    // Handle knobs through control functions
+    handleKnob1(knob1Val);
+    handleKnob2(knob2Val);
+    
     if(loopLength < 1) loopLength = 1;
 
     // Clamp position if it's outside the new loop boundaries
@@ -213,6 +229,252 @@ void Controls()
     pod.led2.Set(rec == true, 0, 0);
 
     pod.UpdateLeds();
+}
+
+// MIDI handler - Phase 4: Implement MIDI control
+void updateMIDIControls()
+{
+    while(pod.midi.HasEvents()) {
+        MidiEvent event = pod.midi.PopEvent();
+        
+        // Handle Control Change messages
+        if(event.type == ControlChange) {
+            uint8_t ccNumber = event.data[0];  // CC number
+            uint8_t ccValue = event.data[1];   // CC value
+            
+            switch(ccNumber) {
+                case MIDI_CC_RECORD:
+                    if(ccValue > 63) {
+                        handleRecordOn();   // Values 64-127 = Record ON
+                    } else {
+                        handleRecordOff();  // Values 0-63 = Record OFF
+                    }
+                    break;
+                    
+                case MIDI_CC_PLAY_TOGGLE:
+                    if(ccValue >= 64) handlePlayToggle();
+                    break;
+                    
+                case MIDI_CC_PLAY:
+                    if(ccValue >= 64) handlePlay();
+                    break;
+                    
+                case MIDI_CC_STOP:
+                    if(ccValue >= 64) handleStop();
+                    break;
+                    
+                case MIDI_CC_DIRECTION:
+                    if(ccValue > 63) {
+                        handleReverse();  // Values 64-127 = Reverse
+                    } else {
+                        handleForward();  // Values 0-63 = Forward
+                    }
+                    break;
+                    
+                case MIDI_CC_SPEED_RESET:
+                    if(ccValue >= 64) handleSpeedReset();
+                    break;
+                    
+                case MIDI_CC_SPEED:
+                    loopSpeed = midiToSpeed(ccValue);
+                    positionAccumulator = 0.0;  // Reset accumulator when speed changes
+                    break;
+                    
+                case MIDI_CC_LOOP_START:
+                    handleKnob1(midiToFloat(ccValue));
+                    break;
+                    
+                case MIDI_CC_LOOP_LENGTH:
+                    handleKnob2(midiToFloat(ccValue));
+                    break;
+                    
+                case MIDI_CC_RESET:
+                    if(ccValue >= 64) handleReset();
+                    break;
+            }
+        }
+        
+        // Handle Note On messages
+        if(event.type == NoteOn && event.data[1] > 0) {  // Velocity > 0
+            uint8_t noteNumber = event.data[0];  // Note number
+            
+            switch(noteNumber) {
+                case MIDI_NOTE_RECORD:
+                    handleRecordToggle();
+                    break;
+                    
+                case MIDI_NOTE_PLAY:
+                    handlePlay();
+                    break;
+                    
+                case MIDI_NOTE_STOP:
+                    handleStop();
+                    break;
+                    
+                case MIDI_NOTE_DIRECTION:
+                    handleDirectionToggle();
+                    break;
+                    
+                case MIDI_NOTE_RESET:
+                    handleReset();
+                    break;
+            }
+        }
+    }
+}
+
+// Phase 3: MIDI value conversion helpers
+float midiToFloat(uint8_t midiValue) 
+{
+    return (float)midiValue / 127.0f;  // 0-127 → 0.0-1.0
+}
+
+float midiToSpeed(uint8_t midiValue) 
+{
+    // 0-127 → 0.25-4.0, with 64 = 1.0 (normal speed)
+    if(midiValue == 64) return 1.0f;
+    if(midiValue < 64) {
+        return 0.25f + (midiValue / 64.0f) * 0.75f;  // 0-64 → 0.25-1.0
+    } else {
+        return 1.0f + ((midiValue - 64) / 63.0f) * 3.0f;  // 65-127 → 1.0-4.0
+    }
+}
+
+// Control functions - Phase 1: Extract control logic
+void handleRecordToggle()
+{
+    if(first && rec)
+    {
+        first = false;
+        mod   = len;
+        loopLength = len;
+        len   = 0;
+    }
+    res  = true;
+    play = true;
+    rec  = !rec;
+}
+
+void handleRecordOn()
+{
+    if(first && rec)
+    {
+        first = false;
+        mod   = len;
+        loopLength = len;
+        len   = 0;
+    }
+    res  = true;
+    play = true;
+    rec  = true;
+}
+
+void handleRecordOff()
+{
+    if(first && rec)
+    {
+        first = false;
+        mod   = len;
+        loopLength = len;
+        len   = 0;
+    }
+    res  = true;
+    play = true;
+    rec  = false;
+}
+
+
+void handlePlayToggle()
+{
+    pos = loopStart; // Play from beginning
+    play = !play;
+    rec  = false;
+}
+
+void handlePlay()
+{
+    pos = loopStart; // Play from beginning
+    play = true;
+    rec  = false;
+}
+
+void handleStop()
+{
+    pos = loopStart; // Play from beginning
+    play = false;
+    rec  = false;
+}
+
+void handleDirectionToggle()
+{
+    fwd = !fwd;
+}
+
+void handleReverse()
+{
+    fwd = false;
+}
+
+void handleForward()
+{
+    fwd = true;
+}
+
+void handleSpeedReset()
+{
+    loopSpeed = 1.0;
+    positionAccumulator = 0.0;
+}
+
+void handleSpeedChange(int32_t increment)
+{
+    if(increment > 0)
+    {
+        loopSpeed *= 1.1f;  // Increase speed by 10%
+        if(loopSpeed > 4.0f) loopSpeed = 4.0f;  // Cap at 4x speed
+    }
+    else if(increment < 0)
+    {
+        loopSpeed *= 0.9f;  // Decrease speed by 10%
+        if(loopSpeed < 0.25f) loopSpeed = 0.25f;  // Cap at 1/4 speed
+    }
+}
+
+void handleKnob1(float value)
+{
+    // Only allow knob takeover after first loop is recorded
+    if(!first) {
+        // Knob1 takeover: becomes active when moved to 0-0.05 range
+        if(value >= 0.0f && value <= 0.05f) {
+            knob1Active = true;
+        }
+    }
+
+    // Apply knob control only when active
+    if(knob1Active) {
+        loopStart = (int) (mod * value);
+    }
+}
+
+void handleKnob2(float value)
+{
+    // Only allow knob takeover after first loop is recorded
+    if(!first) {
+        // Knob2 takeover: becomes active when moved to 0.95-1.0 range
+        if(value >= 0.95f && value <= 1.0f) {
+            knob2Active = true;
+        }
+    }
+
+    // Apply knob control only when active
+    if(knob2Active) {
+        loopLength = (int) ( (mod-loopStart) * value );
+    }
+}
+
+void handleReset()
+{
+    ResetBuffer();
 }
 
 void WriteBuffer(AudioHandle::InterleavingInputBuffer in, size_t i)
